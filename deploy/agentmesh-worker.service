@@ -1,0 +1,31 @@
+[Unit]
+Description=AgentMesh sandbox worker
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+# The worker talks to the Docker daemon, so it needs docker group membership.
+# It never exposes the socket to task containers.
+User=agentmesh
+Group=agentmesh
+SupplementaryGroups=docker
+WorkingDirectory=/opt/agentmesh
+EnvironmentFile=/etc/agentmesh/worker.env
+ExecStart=/opt/agentmesh/.venv/bin/agentmesh worker --config /etc/agentmesh/agentmesh.yaml
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=40
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agentmesh /srv/agentmesh
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

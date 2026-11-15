@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AgentMesh — Sandbox Fleet Control</title>
+<style>
+  :root{
+    --bg:#080b11; --panel:#0f141d; --panel2:#141b26; --line:#1f2937;
+    --text:#e6edf7; --muted:#7d8da5; --dim:#4b5b70;
+    --cyan:#5eead4; --blue:#7dd3fc; --violet:#a78bfa; --amber:#fbbf24;
+    --red:#fb7185; --green:#34d399; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
+    font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+  body{background-image:
+      radial-gradient(900px 500px at 15% -10%, rgba(94,234,212,.08), transparent 60%),
+      radial-gradient(800px 420px at 90% 0%, rgba(167,139,250,.08), transparent 55%),
+      linear-gradient(rgba(255,255,255,.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.02) 1px, transparent 1px);
+    background-size:auto,auto,42px 42px,42px 42px}
+  .wrap{max-width:1320px;margin:0 auto;padding:26px 24px 60px}
+  header{display:flex;align-items:center;gap:14px;padding-bottom:22px}
+  .logo{width:38px;height:38px;position:relative;filter:drop-shadow(0 0 18px rgba(94,234,212,.35))}
+  .logo svg{width:100%;height:100%}
+  h1{font-size:18px;letter-spacing:.2px;margin:0;font-weight:650}
+  h1 span{color:var(--muted);font-weight:400}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);
+    box-shadow:0 0 0 4px rgba(52,211,153,.12), 0 0 14px rgba(52,211,153,.7);
+    animation:pulse 2.4s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.45;transform:scale(.85)}}
+  .statusline{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-family:var(--mono)}
+  .grow{flex:1}
+  .btn{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;
+    padding:7px 11px;font:12px var(--mono);cursor:pointer;transition:.15s}
+  .btn:hover{border-color:#334155;background:#182131}
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+  .card{background:linear-gradient(180deg,rgba(20,27,38,.9),rgba(15,20,29,.9));
+    border:1px solid var(--line);border-radius:12px;position:relative;overflow:hidden}
+  .card::after{content:"";position:absolute;inset:0;border-radius:12px;pointer-events:none;
+    background:linear-gradient(180deg,rgba(255,255,255,.035),transparent 35%)}
+  .kpi{padding:15px 16px 13px}
+  .kpi .label{font:10.5px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.11em}
+  .kpi .value{font-size:30px;font-weight:600;letter-spacing:-.02em;margin-top:5px;font-variant-numeric:tabular-nums}
+  .kpi .sub{font:11px var(--mono);color:var(--dim);margin-top:3px}
+  .kpi.active .value{color:var(--cyan)}
+  .kpi.queued .value{color:var(--blue)}
+  .kpi.ok .value{color:var(--green)}
+  .kpi.fail .value{color:var(--red)}
+  .grid{display:grid;grid-template-columns:1.55fr .9fr;gap:16px}
+  .panel{padding:16px 18px}
+  .panel h2{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);
+    margin:0 0 14px;font-weight:600;font-family:var(--mono);display:flex;align-items:center;gap:8px}
+  .panel h2 .tag{margin-left:auto;color:var(--dim);letter-spacing:0;text-transform:none;font-size:10.5px}
+  .bars{display:grid;gap:13px}
+  .bar .top{display:flex;justify-content:space-between;font:11.5px var(--mono);color:var(--muted);margin-bottom:6px}
+  .bar .top b{color:var(--text);font-weight:500}
+  .track{height:7px;background:#0a0f17;border-radius:20px;border:1px solid #1a2432;overflow:hidden}
+  .fill{height:100%;border-radius:20px;background:linear-gradient(90deg,var(--cyan),var(--blue));
+    transition:width .6s cubic-bezier(.2,.8,.2,1)}
+  .fill.violet{background:linear-gradient(90deg,var(--violet),#f0abfc)}
+  .fill.amber{background:linear-gradient(90deg,var(--amber),#f97316)}
+  .tenants{margin-top:18px}
+  .tenant{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed #1c2534;font:12px var(--mono)}
+  .tenant:last-child{border-bottom:0}
+  .tenant .name{color:var(--text)}
+  .tenant .meta{color:var(--dim)}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font:10px var(--mono);letter-spacing:.12em;text-transform:uppercase;
+    color:var(--dim);padding:0 10px 10px;font-weight:500;border-bottom:1px solid var(--line)}
+  td{padding:9px 10px;border-bottom:1px solid #151d29;font-size:12.5px;vertical-align:middle}
+  tr:last-child td{border-bottom:0}
+  tbody tr{transition:background .15s}
+  tbody tr:hover{background:rgba(125,211,252,.035)}
+  .mono{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  .taskname{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:20px;
+    font:10.5px var(--mono);letter-spacing:.02em;border:1px solid transparent;white-space:nowrap}
+  .pill::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
+  .st-running{color:var(--cyan);background:rgba(94,234,212,.08);border-color:rgba(94,234,212,.22)}
+  .st-leased{color:var(--blue);background:rgba(125,211,252,.08);border-color:rgba(125,211,252,.2)}
+  .st-queued{color:var(--amber);background:rgba(251,191,36,.07);border-color:rgba(251,191,36,.2)}
+  .st-succeeded{color:var(--green);background:rgba(52,211,153,.07);border-color:rgba(52,211,153,.2)}
+  .st-failed,.st-timed_out{color:var(--red);background:rgba(251,113,133,.07);border-color:rgba(251,113,133,.2)}
+  .st-canceled{color:var(--dim);background:rgba(75,91,112,.1);border-color:rgba(75,91,112,.25)}
+  .empty{padding:30px;text-align:center;color:var(--dim);font:12px var(--mono)}
+  .workers{display:grid;gap:8px}
+  .worker{display:grid;grid-template-columns:1fr auto;gap:4px 14px;padding:9px 0;border-bottom:1px dashed #1c2534}
+  .worker:last-child{border-bottom:0}
+  .worker .id{font:11.5px var(--mono);color:var(--text);overflow:hidden;text-overflow:ellipsis}
+  .worker .st{font:10px var(--mono);align-self:center}
+  .worker .detail{grid-column:1/-1;font:10.5px var(--mono);color:var(--dim)}
+  footer{margin-top:26px;color:var(--dim);font:11px var(--mono);display:flex;gap:16px;flex-wrap:wrap}
+  .overlay{position:fixed;inset:0;background:rgba(4,7,12,.82);backdrop-filter:blur(6px);
+    display:none;place-items:center;z-index:20}
+  .overlay.show{display:grid}
+  .modal{width:min(420px,92vw);background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:22px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+  .modal h3{margin:0 0 6px;font-size:15px}
+  .modal p{margin:0 0 14px;color:var(--muted);font-size:12.5px}
+  .modal input{width:100%;background:#0a0f17;border:1px solid var(--line);border-radius:8px;
+    padding:10px 11px;color:var(--text);font:12px var(--mono);outline:none}
+  .modal input:focus{border-color:#2b3b50}
+  .row{display:flex;gap:8px;margin-top:12px;justify-content:flex-end}
+  .fineprint{color:var(--dim);font-size:11px;margin-top:12px}
+  @media(max-width:1000px){.kpis{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
+  @media(max-width:620px){.kpis{grid-template-columns:1fr 1fr}.wrap{padding:16px 12px 40px}
+    .taskname{max-width:120px} th:nth-child(4),td:nth-child(4){display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">
+      <svg viewBox="0 0 40 40" fill="none">
+        <path d="M20 3 35 11.5v17L20 37 5 28.5v-17L20 3Z" stroke="#5eead4" stroke-width="1.2" opacity=".65"/>
+        <path d="M20 10.5 28.5 15v9L20 28.5 11.5 24v-9L20 10.5Z" stroke="#7dd3fc" stroke-width="1.1"/>
+        <circle cx="20" cy="19.5" r="3.4" fill="#5eead4" opacity=".9"/>
+        <path d="M20 3v7.5M20 28.5V37M5 11.5l6.5 3.5M28.5 24.5 35 28M35 11.5 28.5 15M11.5 24 5 28" stroke="#a78bfa" stroke-width="1" opacity=".6"/>
+      </svg>
+    </div>
+    <div>
+      <h1>AgentMesh <span>/ fleet control</span></h1>
+      <div class="statusline"><span class="dot"></span><span id="conn">connecting…</span></div>
+    </div>
+    <div class="grow"></div>
+    <span class="mono" id="version"></span>
+    <button class="btn" id="pause">pause</button>
+    <button class="btn" id="tokenbtn">token</button>
+  </header>
+
+  <section class="kpis">
+    <div class="card kpi active"><div class="label">Active sandboxes</div><div class="value" id="k-active">–</div><div class="sub" id="k-active-sub">leased + running</div></div>
+    <div class="card kpi queued"><div class="label">Queued</div><div class="value" id="k-queued">–</div><div class="sub" id="k-queued-sub">waiting for capacity</div></div>
+    <div class="card kpi ok"><div class="label">Succeeded</div><div class="value" id="k-ok">–</div><div class="sub" id="k-ok-sub">all time</div></div>
+    <div class="card kpi fail"><div class="label">Failed</div><div class="value" id="k-fail">–</div><div class="sub" id="k-fail-sub">failed + timed out</div></div>
+    <div class="card kpi"><div class="label">Workers online</div><div class="value" id="k-workers">–</div><div class="sub" id="k-workers-sub">sandbox capacity</div></div>
+  </section>
+
+  <div class="grid">
+    <div style="display:grid;gap:16px">
+      <section class="card panel">
+        <h2>Queue throughput <span class="tag" id="throughput"></span></h2>
+        <div class="bars">
+          <div class="bar"><div class="top"><span>CPU allocated</span><b id="cpu-txt">–</b></div><div class="track"><div class="fill" id="cpu-bar" style="width:0%"></div></div></div>
+          <div class="bar"><div class="top"><span>Memory allocated</span><b id="mem-txt">–</b></div><div class="track"><div class="fill violet" id="mem-bar" style="width:0%"></div></div></div>
+          <div class="bar"><div class="top"><span>Sandbox slots</span><b id="slot-txt">–</b></div><div class="track"><div class="fill amber" id="slot-bar" style="width:0%"></div></div></div>
+        </div>
+        <div class="tenants">
+          <h2 style="margin:18px 0 4px">Tenant fairness <span class="tag">weighted fair queue</span></h2>
+          <div id="tenants"><div class="empty">no tenants yet</div></div>
+        </div>
+      </section>
+
+      <section class="card panel">
+        <h2>Tasks <span class="tag">latest 25</span></h2>
+        <table>
+          <thead><tr><th>Task</th><th>Status</th><th>Tenant</th><th>Attempt</th><th>Worker</th><th>Name</th><th>Age</th></tr></thead>
+          <tbody id="tasks"><tr><td colspan="7"><div class="empty">waiting for tasks…</div></td></tr></tbody>
+        </table>
+      </section>
+    </div>
+
+    <div style="display:grid;gap:16px;align-content:start">
+      <section class="card panel">
+        <h2>Workers <span class="tag" id="worker-count"></span></h2>
+        <div class="workers" id="workers"><div class="empty">no workers registered</div></div>
+      </section>
+      <section class="card panel">
+        <h2>Runtime <span class="tag">control plane</span></h2>
+        <div class="bars">
+          <div class="bar"><div class="top"><span>Lease TTL</span><b id="r-lease">–</b></div></div>
+          <div class="bar"><div class="top"><span>Avg queue wait</span><b id="r-wait">–</b></div></div>
+          <div class="bar"><div class="top"><span>Avg agent duration</span><b id="r-dur">–</b></div></div>
+          <div class="bar"><div class="top"><span>Database</span><b id="r-db">–</b></div></div>
+          <div class="bar"><div class="top"><span>Auth</span><b id="r-auth">–</b></div></div>
+        </div>
+      </section>
+      <section class="card panel">
+        <h2>Isolation <span class="tag">per agent</span></h2>
+        <div class="mono" style="line-height:1.9;color:var(--dim);font-size:11px">
+          one container or microVM per task<br/>
+          private workspace + network namespace<br/>
+          cgroup CPU / memory / pid ceilings<br/>
+          all capabilities dropped · non-root<br/>
+          egress allowlist via per-task proxy
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <footer>
+    <span>AgentMesh control plane</span><span id="foot-uptime"></span>
+    <span style="margin-left:auto">polling /v1/stats · 1.5s</span>
+  </footer>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h3>API token required</h3>
+    <p>The control plane has authentication enabled. Paste a bearer token to view live fleet state.</p>
+    <input id="tokeninput" type="password" placeholder="token" autocomplete="off" />
+    <div class="row"><button class="btn" id="cleartoken">clear</button><button class="btn" id="savetoken" style="border-color:#2b4a52;color:var(--cyan)">connect</button></div>
+    <div class="fineprint">Stored in this browser's localStorage only. Sent as Authorization: Bearer.</div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { paused:false, timer:null, lastTotal:null, lastAt:null, token:localStorage.getItem("agentmesh_token")||"" };
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ago = ts => {
+  if (!ts) return "–";
+  const s = Math.max(0, Date.now()/1000 - ts);
+  if (s < 60) return Math.floor(s) + "s";
+  if (s < 3600) return Math.floor(s/60) + "m";
+  if (s < 86400) return Math.floor(s/3600) + "h";
+  return Math.floor(s/86400) + "d";
+};
+const bytes = n => n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(0)+" KB" : (n||0)+" B";
+
+async function api(path){
+  const headers = {};
+  if (state.token) headers["Authorization"] = "Bearer " + state.token;
+  const r = await fetch(path, {headers});
+  if (r.status === 401) { $("overlay").classList.add("show"); throw new Error("unauthorized"); }
+  if (!r.ok) throw new Error(path + " -> " + r.status);
+  return r.json();
+}
+
+function pill(status){
+  const cls = ["running","leased","queued","succeeded","failed","timed_out","canceled"].includes(status) ? status : "queued";
+  return `<span class="pill st-${cls}">${esc(status)}</span>`;
+}
+
+function renderTasks(tasks){
+  const body = $("tasks");
+  if (!tasks.length){ body.innerHTML = `<tr><td colspan="7"><div class="empty">waiting for tasks…</div></td></tr>`; return; }
+  body.innerHTML = tasks.map(t => `
+      <tr>
+        <td class="mono">${esc(t.id.replace("task_","…"))}</td>
+        <td>${pill(t.status)}</td>
+        <td class="mono">${esc(t.tenant)}</td>
+        <td class="mono">${t.attempts}/${t.max_retries+1}</td>
+        <td class="mono">${esc((t.worker_id||"—").replace(/^worker_/,"…"))}</td>
+        <td class="taskname">${esc(t.name)}</td>
+        <td class="mono">${ago(t.created_at)}</td>
+      </tr>`).join("");
+}
+
+function renderWorkers(workers){
+  const el = $("workers");
+  $("worker-count").textContent = workers.length + " total";
+  if (!workers.length){ el.innerHTML = `<div class="empty">no workers registered</div>`; return; }
+  el.innerHTML = workers.map(w => `
+    <div class="worker">
+      <div class="id">${esc(w.id)}</div>
+      <div class="st" style="color:${w.status==="online"?"var(--green)":w.status==="draining"?"var(--amber)":"var(--dim)"}">● ${esc(w.status)}</div>
+      <div class="detail">${esc(w.backend)} · ${w.free.slots}/${w.capacity.slots} slots · cpu ${w.free.cpu}/${w.capacity.cpu} · mem ${w.free.memory_mb}/${w.capacity.memory_mb} MB</div>
+    </div>`).join("");
+}
+
+function pct(free, cap){ return cap > 0 ? Math.min(100, Math.max(0, 100*(cap-free)/cap)) : 0; }
+
+function renderTenants(tenants){
+  const el = $("tenants");
+  if (!tenants || !tenants.length){ el.innerHTML = `<div class="empty">no tenants yet</div>`; return; }
+  el.innerHTML = tenants.map(t => `
+    <div class="tenant">
+      <span class="name">${esc(t.name)}</span>
+      <span class="meta">w=${t.weight} · active ${t.active}/${t.max_concurrent} · vt=${Number(t.virtual_time).toFixed(1)}</span>
+    </div>`).join("");
+}
+
+async function tick(){
+  try {
+    const [stats, tasks, workers] = await Promise.all([
+      api("/v1/stats"),
+      api("/v1/tasks?limit=25"),
+      api("/v1/workers")
+    ]);
+    $("conn").textContent = "connected · " + new Date().toLocaleTimeString();
+    $("version").textContent = "v" + (stats.version||"");
+    const t = stats.tasks, w = stats.workers, by = t.by_status||{};
+    $("k-active").textContent = t.active ?? 0;
+    $("k-queued").textContent = t.queued ?? 0;
+    $("k-ok").textContent = by.succeeded ?? 0;
+    $("k-fail").textContent = (by.failed||0) + (by.timed_out||0);
+    $("k-workers").textContent = w.online + "/" + w.total;
+    $("k-active-sub").textContent = (by.leased||0) + " leased · " + (by.running||0) + " running";
+    $("k-queued-sub").textContent = t.oldest_queued_age_s ? "oldest " + t.oldest_queued_age_s + "s" : "queue empty";
+    $("k-ok-sub").textContent = (by.succeeded||0) + " completed agents";
+    $("k-fail-sub").textContent = (by.failed||0) + " failed · " + (by.timed_out||0) + " timed out";
+    $("k-workers-sub").textContent = w.free_slots + " of " + w.capacity_slots + " slots free";
+    $("cpu-txt").textContent = w.free_cpu + " free / " + w.capacity_cpu + " cores";
+    $("mem-txt").textContent = w.free_memory_mb + " free / " + w.capacity_memory_mb + " MB";
+    $("slot-txt").textContent = w.free_slots + " free / " + w.capacity_slots;
+    $("cpu-bar").style.width = pct(w.free_cpu, w.capacity_cpu) + "%";
+    $("mem-bar").style.width = pct(w.free_memory_mb, w.capacity_memory_mb) + "%";
+    $("slot-bar").style.width = pct(w.free_slots, w.capacity_slots) + "%";
+    const now = Date.now()/1000;
+    if (state.lastTotal !== null && state.lastAt){
+      const rate = Math.max(0, (t.total - state.lastTotal) / Math.max(0.001, now - state.lastAt));
+      $("throughput").textContent = rate > 0 ? "ingest " + (rate*60).toFixed(1) + "/min" : "steady state";
+    }
+    state.lastTotal = t.total; state.lastAt = now;
+    $("r-lease").textContent = stats.config.lease_ttl_s + "s";
+    $("r-wait").textContent = t.avg_queue_wait_s != null ? t.avg_queue_wait_s + "s" : "–";
+    $("r-dur").textContent = t.avg_duration_s != null ? t.avg_duration_s + "s" : "–";
+    $("r-db").textContent = bytes(stats.db_size_bytes||0);
+    $("r-auth").textContent = stats.auth_enabled ? "bearer token" : "open (dev)";
+    renderWorkers(workers.workers||[]);
+    renderTasks(tasks.tasks||[]);
+    renderTenants(stats.tenants);
+    $("foot-uptime").textContent = "server time " + new Date().toLocaleTimeString();
+  } catch (err) {
+    if (String(err.message) !== "unauthorized") {
+      $("conn").textContent = "disconnected · retrying";
+      $("conn").style.color = "var(--red)";
+    }
+  }
+}
+
+function loop(){
+  clearTimeout(state.timer);
+  if (state.paused) return;
+  tick().finally(() => { state.timer = setTimeout(loop, 1500); });
+}
+
+$("pause").onclick = () => {
+  state.paused = !state.paused;
+  $("pause").textContent = state.paused ? "resume" : "pause";
+  if (!state.paused) loop();
+};
+$("tokenbtn").onclick = () => $("overlay").classList.add("show");
+$("savetoken").onclick = () => {
+  state.token = $("tokeninput").value.trim();
+  localStorage.setItem("agentmesh_token", state.token);
+  $("overlay").classList.remove("show");
+  loop();
+};
+$("cleartoken").onclick = () => {
+  state.token = ""; localStorage.removeItem("agentmesh_token"); $("tokeninput").value = "";
+};
+$("tokeninput").addEventListener("keydown", e => { if (e.key === "Enter") $("savetoken").click(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) clearTimeout(state.timer);
+  else loop();
+});
+loop();
+</script>
+</body>
+</html>
