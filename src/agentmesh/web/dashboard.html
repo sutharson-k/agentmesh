@@ -78,6 +78,8 @@
   .mono{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
   .taskname{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .taskid{white-space:nowrap}
+  @keyframes flashrow{0%{background:rgba(94,234,212,.16)}100%{background:transparent}}
+  tr.flash td{animation:flashrow 2.8s ease-out}
   .pill{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:20px;
     font:10.5px var(--mono);letter-spacing:.02em;border:1px solid transparent;white-space:nowrap}
   .pill::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
@@ -184,7 +186,7 @@
   <div class="grid">
     <div style="display:grid;gap:16px">
       <section class="card panel composer">
-        <h2>New task <span class="tag">prompt → sandbox</span></h2>
+        <h2>New task <span class="tag" id="compose-workers">checking workers…</span></h2>
         <textarea class="field" id="c-prompt" spellcheck="false"
           placeholder="Describe the task for the agent — e.g. &quot;Run the test suite and fix the failing tests. Do not touch CI config.&quot;"></textarea>
         <div class="fields">
@@ -306,7 +308,8 @@ const state = {
   // Tokens live in sessionStorage (this tab only) and are never persisted to
   // disk, the config file, or the control-plane database.
   token: sessionStorage.getItem("agentmesh_token") || legacyToken,
-  modelsFreeOnly: localStorage.getItem("agentmesh_models_free_only") !== "0"
+  modelsFreeOnly: localStorage.getItem("agentmesh_models_free_only") !== "0",
+  workersOnline: 0, freeSlots: 0, flash: null, flashTimer: null, watchSeq: 0
 };
 if (state.token) sessionStorage.setItem("agentmesh_token", state.token);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -347,7 +350,7 @@ function renderTasks(tasks){
   const body = $("tasks");
   if (!tasks.length){ body.innerHTML = `<tr><td colspan="7"><div class="empty">waiting for tasks…</div></td></tr>`; return; }
   body.innerHTML = tasks.map(t => `
-      <tr>
+      <tr class="${t.id === state.flash ? "flash" : ""}">
         <td class="mono taskid" title="${esc(t.id)}">…${esc(t.id.slice(-8))}</td>
         <td>${pill(t.status)}</td>
         <td class="mono">${esc(t.tenant)}</td>
@@ -487,14 +490,58 @@ async function submitTask(){
       body: JSON.stringify(payload)
     });
     const task = data.task || {};
-    composeMsg("queued " + (task.id || "task"), "ok");
+    const id = task.id || "";
+    flashTask(id);
     $("c-prompt").value = "";
     await tick();
+    watchTask(id);
   } catch (err) {
     composeMsg(String(err.message), "error");
   } finally {
     btn.disabled = false;
   }
+}
+
+function flashTask(id){
+  state.flash = id;
+  clearTimeout(state.flashTimer);
+  state.flashTimer = setTimeout(() => { state.flash = null; }, 7000);
+}
+
+async function watchTask(id){
+  if (!id) return;
+  const seq = ++state.watchSeq;
+  const current = () => seq === state.watchSeq;
+  const terminal = ["succeeded", "failed", "timed_out", "canceled"];
+  for (let i = 0; i < 20; i++){
+    if (!current()) return;
+    if (i === 0){
+      composeMsg("queued " + id + (state.workersOnline ? " — waiting for a free slot…" : " — no worker online"));
+    }
+    await new Promise(resolve => setTimeout(resolve, i === 0 ? 400 : 900));
+    if (!current()) return;
+    let task;
+    try { task = await api("/v1/tasks/" + encodeURIComponent(id)); }
+    catch (err){ composeMsg(String(err.message), "error"); return; }
+    const status = task.status || "";
+    if (status === "leased" || status === "running"){
+      composeMsg("running " + id + " …", "ok");
+    } else if (status === "succeeded"){
+      composeMsg("succeeded " + id, "ok");
+      flashTask(id);
+      await tick();
+      return;
+    } else if (terminal.includes(status)){
+      composeMsg(status + " " + id + (task.error ? " — " + task.error : ""), "error");
+      flashTask(id);
+      await tick();
+      return;
+    } else if (!state.workersOnline){
+      composeMsg("queued " + id + " — no worker online. Start one: start.bat worker", "error");
+    }
+  }
+  composeMsg("still queued " + id + " — is a worker online?", "error");
+  await tick();
 }
 
 async function importOpenRouter(){
@@ -571,6 +618,17 @@ async function tick(){
     $("k-ok-sub").textContent = (by.succeeded||0) + " completed agents";
     $("k-fail-sub").textContent = (by.failed||0) + " failed · " + (by.timed_out||0) + " timed out";
     $("k-workers-sub").textContent = w.free_slots + " of " + w.capacity_slots + " slots free";
+    state.workersOnline = w.online || 0;
+    state.freeSlots = w.free_slots || 0;
+    const cw = $("compose-workers");
+    if (!state.workersOnline){
+      cw.textContent = "no workers online — tasks will wait";
+      cw.style.color = "var(--amber)";
+    } else {
+      cw.textContent = state.workersOnline + " worker" + (state.workersOnline === 1 ? "" : "s") +
+        " · " + state.freeSlots + " slots free";
+      cw.style.color = "var(--dim)";
+    }
     $("cpu-txt").textContent = w.free_cpu + " free / " + w.capacity_cpu + " cores";
     $("mem-txt").textContent = w.free_memory_mb + " free / " + w.capacity_memory_mb + " MB";
     $("slot-txt").textContent = w.free_slots + " free / " + w.capacity_slots;
