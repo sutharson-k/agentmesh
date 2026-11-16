@@ -777,6 +777,11 @@ class Store:
                 return self.public_task(self._task_internal(req.task_id))
             if task["status"] not in ACTIVE:
                 raise Conflict(f"task is already {task['status']}")
+            if task["status"] == "leased":
+                # A fast task can finish before the worker's first heartbeat
+                # marks it running. Emit the lifecycle event so the audit trail
+                # is always submitted -> leased -> started -> terminal.
+                self._event(cur, req.task_id, "started", {"worker_id": task["worker_id"]})
 
             cur.execute(
                 "UPDATE leases SET released_at=?, outcome=? WHERE id=?",

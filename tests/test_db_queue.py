@@ -170,6 +170,14 @@ def test_complete_success_and_failure_retry(tmp_path):
         assert done["status"] == "succeeded"
         assert done["result"] == {"files": 1}
         assert store.task_logs(t["id"])["logs"] == "hello"
+        # A task that completes before its first heartbeat must still record
+        # the "started" transition in the audit trail.
+        assert [e["kind"] for e in store.task_events(t["id"])] == [
+            "submitted",
+            "leased",
+            "started",
+            "succeeded",
+        ]
 
         t2 = submit(store, name="fail")
         lease2 = claim(store)[0]
