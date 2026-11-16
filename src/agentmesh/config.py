@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -149,12 +149,6 @@ class Config:
     def _apply(self, data: dict[str, Any]) -> None:
         self._apply_section(self.server, data.get("server"), "server")
         self._apply_section(self.worker, data.get("worker"), "worker")
-        docker = (data.get("worker") or {}).get("docker") if isinstance(data.get("worker"), dict) else None
-        if docker:
-            self._apply_section(self.worker.docker, docker, "worker.docker")
-        fc = (data.get("worker") or {}).get("firecracker") if isinstance(data.get("worker"), dict) else None
-        if fc:
-            self._apply_section(self.worker.firecracker, fc, "worker.firecracker")
         agents = data.get("agents")
         if isinstance(agents, dict):
             commands = agents.get("commands")
@@ -176,7 +170,12 @@ class Config:
             if key not in known:
                 continue
             current = getattr(target, key)
-            if isinstance(current, bool):
+            if is_dataclass(current) and not isinstance(current, type):
+                # Nested sections (worker.docker, worker.firecracker) must be
+                # merged recursively; assigning the raw dict would replace the
+                # dataclass instance and break later validation.
+                Config._apply_section(current, value, f"{name}.{key}")
+            elif isinstance(current, bool):
                 setattr(target, key, _as_bool(value, current))
             elif isinstance(current, int) and not isinstance(current, bool):
                 setattr(target, key, int(value))
