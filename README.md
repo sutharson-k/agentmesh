@@ -38,10 +38,12 @@ AgentMesh schedules coding-agent tasks across many worker machines, gives **ever
 | **Strict egress** | Default `--network none`. Optional allowlist mode: a **per-task** internal Docker network plus a **per-task egress proxy** sidecar. The proxy validates a per-task token, allowlisted hostnames, ports 80/443, and rejects private/link-local/metadata IPs (DNS-rebinding safe). |
 | **Firecracker** | Real microVM adapter: per-run writable rootfs, vCPU/memory config, vsock guest-agent protocol, no network device by default, VM destroyed after the run. See [docs/FIRECRACKER.md](docs/FIRECRACKER.md). |
 | **Fairness** | Weighted fair queuing per tenant (virtual finish time), priority classes, and bucketed anti-starvation aging. |
+| **Model catalog** | Import model metadata from OpenRouter (optionally **free models only**) or a local **Ollama** daemon. Metadata only — API keys are never accepted or stored. Dashboard buttons plus `POST /v1/models/import/*`. |
+| **Secrets** | Config values can be `env:VAR` or `file:PATH` references; a missing reference fails startup instead of silently disabling auth. Bearer tokens are never written to config or the database. |
 | **Observability** | JSON logs, lifecycle audit events, `/v1/stats`, Prometheus `/metrics`, and a zero-dependency live dashboard at `/dashboard`. |
 | **Ops** | Bearer-token auth, submission rate limiting, body-size limits, graceful worker drain, manual retry, idempotency keys. |
 
-**Validated:** 34 tests, including an end-to-end run of **120 concurrent agents across 4 worker processes** with unique sandboxes, plus cancellation, lease expiry, worker loss, tenant fairness, auth and sandbox-spec hardening tests. See [ARCHITECTURE.md](ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
+**Validated:** 42 tests, including an end-to-end run of **120 concurrent agents across 4 worker processes** with unique sandboxes, plus cancellation, lease expiry, worker loss, tenant fairness, auth and sandbox-spec hardening tests. See [ARCHITECTURE.md](ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
 
 ## Quickstart
 
@@ -98,6 +100,41 @@ agentmesh submit --name fix-tests --agent-kind claude \
   --allow api.anthropic.com --allow github.com --wait --logs
 ```
 
+### Model catalog (Ollama + OpenRouter)
+
+The dashboard has a **Models** panel with:
+
+- **free models only** toggle — filters both the imported table and the OpenRouter import,
+- **import openrouter** — pulls public pricing metadata; with the toggle on, only zero-priced models are stored,
+- **import ollama** — point at a local daemon (default `http://127.0.0.1:11434`) and import installed models.
+
+Imports never require or persist an API key. The Ollama URL must be loopback by default (`catalog.allow_remote_ollama: true` to opt out), so the control plane cannot be used as an SSRF pivot.
+
+Using Ollama as the agent runtime needs a reachable endpoint **from inside the sandbox**:
+
+```yaml
+agents:
+  commands:
+    ollama: ["ollama", "run", "{model}", "{prompt}"]
+  env:
+    OLLAMA_HOST: http://host.docker.internal:11434
+```
+
+Then submit with `agent.kind: ollama` and `agent.model: qwen2.5-coder:7b`. Sandboxes are network-isolated by default, so add an egress policy (or run the endpoint where the worker can reach it) that permits the model server. The shipped egress proxy is hostname/443-oriented; for a private model server on the host network you will usually run a dedicated worker with a reachable proxy.
+
+### Load testing (Rust)
+
+`tools/loadgen` is a small Rust binary that submits thousands of tasks, samples queue depth, and verifies per-agent sandbox uniqueness:
+
+```bash
+cargo build --release --manifest-path tools/loadgen/Cargo.toml
+./tools/loadgen/target/release/agentmesh-loadgen --url http://127.0.0.1:8080 --tasks 5000 --tenants 8
+# machine-readable:
+AGENTMESH_TOKEN=... ./tools/loadgen/target/release/agentmesh-loadgen --tasks 20000 --json
+```
+
+It exits non-zero on failures or duplicated workspaces, so it works as a CI performance gate. Pass the token via `AGENTMESH_TOKEN` or `--token-file`; avoid `--token`, which lands in shell history.
+
 ### Firecracker
 
 Firecracker runs on Linux with KVM. Configure kernels/rootfs and build the guest agent into the image; see [docs/FIRECRACKER.md](docs/FIRECRACKER.md). Set `worker.backend: firecracker`. The adapter refuses to start rather than silently degrading isolation if `/dev/kvm` or images are missing.
@@ -133,6 +170,9 @@ agentmesh init        # starter config
 | GET | `/v1/workers`, `/v1/workers/{id}` | Fleet inventory |
 | POST | `/v1/workers/{id}/status` | `online` / `draining` / `offline` |
 | GET/PUT | `/v1/tenants`, `/v1/tenants/{name}` | Fairness weights and concurrency caps |
+| GET | `/v1/models?free_only=&provider=` | Catalog listing (metadata only) |
+| POST | `/v1/models/import` \| `/import/openrouter` \| `/import/ollama` | Import metadata from a list, OpenRouter, or Ollama |
+| DELETE | `/v1/models/{id}` | Remove a catalog entry |
 | GET | `/v1/stats`, `/metrics` | JSON stats / Prometheus exposition |
 | GET | `/dashboard` | Live operations dashboard |
 
@@ -157,8 +197,9 @@ All settings live in `agentmesh.yaml` (see `agentmesh.example.yaml`) and can be 
 ```
 src/agentmesh/
   api.py                 control-plane HTTP + auth/rate limiting
-  db.py                  schema, durable queue, leases, fairness, recovery
+  db.py                  schema, durable queue, leases, fairness, recovery, model catalog
   models.py              validated wire models
+  catalog.py             OpenRouter + loopback-only Ollama metadata import
   cli.py                 server / worker / submit / status / task
   metrics.py             Prometheus rendering
   sandbox/docker_spec.py hardened container + network argv builders
@@ -168,8 +209,9 @@ src/agentmesh/
   agents/runtime.py      CLI templates + built-in mock agent
   guest/agent.py         Firecracker guest agent (vsock, archive return)
   web/dashboard.html     live control dashboard
-tests/                   34 unit + integration + concurrency tests
+tests/                   42 unit + integration + concurrency tests
 scripts/demo_swarm.py    real multi-process 120-agent demo
+tools/loadgen/           Rust load generator / benchmark
 deploy/                  systemd units + control-plane Dockerfile
 ```
 

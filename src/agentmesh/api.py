@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__
+from .catalog import CatalogError, fetch_ollama_models, fetch_openrouter_models
 from .config import Config
 from .db import Conflict, NotFound, Store, WorkerOffline
 from .metrics import render_metrics
@@ -29,6 +30,9 @@ from .models import (
     CompleteRequest,
     Heartbeat,
     LeaseRequest,
+    ModelImportRequest,
+    OllamaImportRequest,
+    OpenRouterImportRequest,
     TaskQuery,
     TaskSubmit,
     TenantLimits,
@@ -363,6 +367,68 @@ def create_app(
         if not name or len(name) > 64:
             raise HTTPException(422, detail="invalid tenant name")
         return await run_in_threadpool(db.set_tenant, name, limits.weight, limits.max_concurrent)
+
+    # ---------------------------------------------------------------- models
+
+    @app.get("/v1/models")
+    async def list_models(free_only: bool = False, provider: str | None = None):
+        models = await run_in_threadpool(
+            db.list_models, free_only=free_only, provider=provider
+        )
+        return {"models": models, "count": len(models), "free_only": free_only}
+
+    @app.post("/v1/models/import")
+    async def import_models(body: ModelImportRequest):
+        entries = [m.model_dump() for m in body.models]
+        result = await run_in_threadpool(
+            db.import_models, entries, source="manual", replace=body.replace
+        )
+        result["models"] = await run_in_threadpool(db.list_models)
+        return result
+
+    @app.post("/v1/models/import/openrouter")
+    async def import_openrouter(body: OpenRouterImportRequest):
+        try:
+            entries = await run_in_threadpool(
+                fetch_openrouter_models,
+                url=cfg.catalog.openrouter_url,
+                free_only=body.free_only,
+                timeout_s=cfg.catalog.request_timeout_s,
+            )
+        except CatalogError as exc:
+            raise HTTPException(502, detail=str(exc)) from exc
+        result = await run_in_threadpool(
+            db.import_models, entries, source="openrouter", replace=True
+        )
+        result["free_only"] = body.free_only
+        result["models"] = await run_in_threadpool(db.list_models)
+        return result
+
+    @app.post("/v1/models/import/ollama")
+    async def import_ollama(body: OllamaImportRequest):
+        base_url = body.base_url or cfg.catalog.ollama_url
+        try:
+            entries = await run_in_threadpool(
+                fetch_ollama_models,
+                base_url,
+                allow_remote=cfg.catalog.allow_remote_ollama,
+                timeout_s=cfg.catalog.request_timeout_s,
+            )
+        except CatalogError as exc:
+            raise HTTPException(502, detail=str(exc)) from exc
+        result = await run_in_threadpool(
+            db.import_models, entries, source="ollama", replace=True
+        )
+        result["base_url"] = base_url
+        result["models"] = await run_in_threadpool(db.list_models)
+        return result
+
+    @app.delete("/v1/models/{model_id:path}")
+    async def delete_model(model_id: str):
+        removed = await run_in_threadpool(db.delete_model, model_id)
+        if not removed:
+            raise HTTPException(404, detail="model not found")
+        return {"deleted": model_id}
 
     # ------------------------------------------------------------------ ops
 

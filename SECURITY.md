@@ -34,6 +34,29 @@ Applications that ignore `HTTP(S)_PROXY` simply have no route; the policy fails 
 
 ## Secrets
 
+**Never commit credentials.** `server.api_keys`, `worker.token`, and
+`worker.docker.egress_token` accept `env:VAR` or `file:PATH` references, resolved
+at startup and held only in process memory:
+
+```yaml
+server:
+  api_keys: ["env:AGENTMESH_API_KEY"]
+worker:
+  token: "file:/run/secrets/agentmesh_token"
+```
+
+A reference that cannot be resolved aborts startup; it never silently becomes
+an empty key (which would disable auth). The Docker launcher passes the token
+with `docker run -e AGENTMESH_API_KEYS` (inherited, not on the command line),
+and `start.bat secure` prompts for it with a masked input — it is not written to
+disk. The dashboard keeps its bearer token in `sessionStorage` (this tab only)
+and migrates/removes any token left in `localStorage` by older builds.
+
+The model catalog stores **metadata only** (provider, name, pricing, context
+size). Import endpoints never accept API keys, and OpenRouter's public catalog
+plus local Ollama need none. Ollama imports are loopback-only by default to
+prevent SSRF; enable `catalog.allow_remote_ollama` only for a trusted endpoint.
+
 Task env values whose keys look like secrets (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, `AUTHORIZATION`) are redacted in API projections and events. The full env is stored in the database and passed to the sandbox because it is required for execution: protect the control-plane database accordingly. Prompt previews are truncated in listings. Logs may contain secrets emitted by the agent; treat `/v1/tasks/{id}/logs` and workspace artifacts as sensitive.
 
 ## Known limitations

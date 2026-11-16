@@ -104,6 +104,20 @@
   .modal input:focus{border-color:#2b3b50}
   .row{display:flex;gap:8px;margin-top:12px;justify-content:flex-end}
   .fineprint{color:var(--dim);font-size:11px;margin-top:12px}
+  .modeltools{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px}
+  .switch{display:inline-flex;align-items:center;gap:7px;font:11px var(--mono);color:var(--muted);
+    cursor:pointer;user-select:none;border:1px solid var(--line);border-radius:8px;padding:6px 9px;background:#0a0f17}
+  .switch input{accent-color:var(--cyan);margin:0}
+  .field{background:#0a0f17;border:1px solid var(--line);border-radius:8px;padding:7px 9px;
+    color:var(--text);font:11px var(--mono);outline:none;min-width:200px;flex:1}
+  .field:focus{border-color:#2b3b50}
+  .badge{font:10px var(--mono);padding:2px 7px;border-radius:20px;border:1px solid}
+  .badge.free{color:var(--green);border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.07)}
+  .badge.paid{color:var(--amber);border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.07)}
+  .modelname{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-family:var(--mono);font-size:11.5px}
+  .icon-btn{background:none;border:0;color:var(--dim);cursor:pointer;font:11px var(--mono);padding:2px 4px}
+  .icon-btn:hover{color:var(--red)}
   @media(max-width:1000px){.kpis{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
   @media(max-width:620px){.kpis{grid-template-columns:1fr 1fr}.wrap{padding:16px 12px 40px}
     .taskname{max-width:120px} th:nth-child(4),td:nth-child(4){display:none}}
@@ -160,6 +174,24 @@
           <tbody id="tasks"><tr><td colspan="7"><div class="empty">waiting for tasks…</div></td></tr></tbody>
         </table>
       </section>
+
+      <section class="card panel">
+        <h2>Models <span class="tag" id="model-count">catalog</span></h2>
+        <div class="modeltools">
+          <label class="switch"><input type="checkbox" id="free-only" checked /> free models only</label>
+          <button class="btn" id="import-openrouter">import openrouter</button>
+          <input class="field" id="ollama-url" value="http://127.0.0.1:11434" spellcheck="false"
+                 placeholder="http://127.0.0.1:11434" />
+          <button class="btn" id="import-ollama">import ollama</button>
+        </div>
+        <div class="fineprint" id="model-msg" style="margin:0 0 10px">
+          metadata only · API keys are read from env and never stored
+        </div>
+        <table>
+          <thead><tr><th>Provider</th><th>Model</th><th>Price</th><th>Context</th><th></th></tr></thead>
+          <tbody id="models"><tr><td colspan="5"><div class="empty">no models imported</div></td></tr></tbody>
+        </table>
+      </section>
     </div>
 
     <div style="display:grid;gap:16px;align-content:start">
@@ -202,13 +234,22 @@
     <p>The control plane has authentication enabled. Paste a bearer token to view live fleet state.</p>
     <input id="tokeninput" type="password" placeholder="token" autocomplete="off" />
     <div class="row"><button class="btn" id="cleartoken">clear</button><button class="btn" id="savetoken" style="border-color:#2b4a52;color:var(--cyan)">connect</button></div>
-    <div class="fineprint">Stored in this browser's localStorage only. Sent as Authorization: Bearer.</div>
+    <div class="fineprint">Kept in this tab's sessionStorage only — never written to disk, config files, or the database. Sent as Authorization: Bearer.</div>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
-const state = { paused:false, timer:null, lastTotal:null, lastAt:null, token:localStorage.getItem("agentmesh_token")||"" };
+const legacyToken = localStorage.getItem("agentmesh_token") || "";
+if (legacyToken) localStorage.removeItem("agentmesh_token");
+const state = {
+  paused:false, timer:null, lastTotal:null, lastAt:null,
+  // Tokens live in sessionStorage (this tab only) and are never persisted to
+  // disk, the config file, or the control-plane database.
+  token: sessionStorage.getItem("agentmesh_token") || legacyToken,
+  modelsFreeOnly: localStorage.getItem("agentmesh_models_free_only") !== "0"
+};
+if (state.token) sessionStorage.setItem("agentmesh_token", state.token);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ago = ts => {
   if (!ts) return "–";
@@ -220,12 +261,16 @@ const ago = ts => {
 };
 const bytes = n => n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(0)+" KB" : (n||0)+" B";
 
-async function api(path){
-  const headers = {};
+async function api(path, opts){
+  const headers = Object.assign({}, (opts && opts.headers) || {});
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
-  const r = await fetch(path, {headers});
+  const r = await fetch(path, Object.assign({}, opts || {}, {headers}));
   if (r.status === 401) { $("overlay").classList.add("show"); throw new Error("unauthorized"); }
-  if (!r.ok) throw new Error(path + " -> " + r.status);
+  if (!r.ok) {
+    let detail = path + " -> " + r.status;
+    try { const body = await r.json(); if (body && body.detail) detail = String(body.detail); } catch (e) {}
+    throw new Error(detail);
+  }
   return r.json();
 }
 
@@ -271,6 +316,94 @@ function renderTenants(tenants){
       <span class="name">${esc(t.name)}</span>
       <span class="meta">w=${t.weight} · active ${t.active}/${t.max_concurrent} · vt=${Number(t.virtual_time).toFixed(1)}</span>
     </div>`).join("");
+}
+
+function modelMsg(text, tone){
+  const el = $("model-msg");
+  el.textContent = text;
+  el.style.color = tone === "error" ? "var(--red)" : tone === "ok" ? "var(--green)" : "var(--dim)";
+}
+
+function renderModels(models){
+  $("model-count").textContent = models.length + (state.modelsFreeOnly ? " free" : " total");
+  const body = $("models");
+  if (!models.length){
+    body.innerHTML = `<tr><td colspan="5"><div class="empty">no models imported</div></td></tr>`;
+    return;
+  }
+  body.innerHTML = models.map(m => `<tr>
+    <td class="mono">${esc(m.provider)}</td>
+    <td class="modelname" title="${esc(m.name)}">${esc(m.name)}</td>
+    <td><span class="badge ${m.free ? "free" : "paid"}">${m.free ? "free" : "paid"}</span></td>
+    <td class="mono">${m.context_length ? Math.round(m.context_length / 1000) + "k" : "–"}</td>
+    <td style="text-align:right"><button class="icon-btn" data-model="${esc(m.id)}">remove</button></td>
+  </tr>`).join("");
+  body.querySelectorAll("[data-model]").forEach(btn => {
+    btn.onclick = () => removeModel(btn.dataset.model);
+  });
+}
+
+async function loadModels(){
+  try {
+    const data = await api("/v1/models?free_only=" + (state.modelsFreeOnly ? "true" : "false"));
+    renderModels(data.models || []);
+  } catch (err) {
+    if (String(err.message) !== "unauthorized") modelMsg(String(err.message), "error");
+  }
+}
+
+async function importOpenRouter(){
+  const btn = $("import-openrouter");
+  btn.disabled = true;
+  modelMsg("importing OpenRouter catalog…");
+  try {
+    const data = await api("/v1/models/import/openrouter", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({free_only: state.modelsFreeOnly})
+    });
+    modelMsg(
+      `imported ${data.inserted} new, updated ${data.updated} · ` +
+      (data.free_only ? "free pricing only" : "all pricing"),
+      "ok"
+    );
+    renderModels(data.models || []);
+  } catch (err) {
+    modelMsg(String(err.message), "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function importOllama(){
+  const btn = $("import-ollama");
+  btn.disabled = true;
+  const base = $("ollama-url").value.trim() || "http://127.0.0.1:11434";
+  modelMsg("reading " + base + " …");
+  try {
+    const data = await api("/v1/models/import/ollama", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({base_url: base})
+    });
+    localStorage.setItem("agentmesh_ollama_url", base);
+    modelMsg(`imported ${data.inserted} new, updated ${data.updated} local models`, "ok");
+    renderModels(data.models || []);
+  } catch (err) {
+    modelMsg(String(err.message), "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function removeModel(id){
+  try {
+    await api("/v1/models/" + encodeURIComponent(id), {method: "DELETE"});
+    modelMsg("removed " + id, "ok");
+    await loadModels();
+  } catch (err) {
+    modelMsg(String(err.message), "error");
+  }
 }
 
 async function tick(){
@@ -336,18 +469,33 @@ $("pause").onclick = () => {
 $("tokenbtn").onclick = () => $("overlay").classList.add("show");
 $("savetoken").onclick = () => {
   state.token = $("tokeninput").value.trim();
-  localStorage.setItem("agentmesh_token", state.token);
+  sessionStorage.setItem("agentmesh_token", state.token);
   $("overlay").classList.remove("show");
   loop();
+  loadModels();
 };
 $("cleartoken").onclick = () => {
-  state.token = ""; localStorage.removeItem("agentmesh_token"); $("tokeninput").value = "";
+  state.token = "";
+  sessionStorage.removeItem("agentmesh_token");
+  localStorage.removeItem("agentmesh_token");
+  $("tokeninput").value = "";
 };
+$("free-only").checked = state.modelsFreeOnly;
+$("free-only").onchange = () => {
+  state.modelsFreeOnly = $("free-only").checked;
+  localStorage.setItem("agentmesh_models_free_only", state.modelsFreeOnly ? "1" : "0");
+  loadModels();
+};
+const savedOllama = localStorage.getItem("agentmesh_ollama_url");
+if (savedOllama) $("ollama-url").value = savedOllama;
+$("import-openrouter").onclick = importOpenRouter;
+$("import-ollama").onclick = importOllama;
 $("tokeninput").addEventListener("keydown", e => { if (e.key === "Enter") $("savetoken").click(); });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) clearTimeout(state.timer);
   else loop();
 });
+loadModels();
 loop();
 </script>
 </body>

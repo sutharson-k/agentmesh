@@ -321,6 +321,7 @@ class WorkerDaemon:
             )
             env = dict(spec.get("env") or {})
             env.update(agent_env)
+            env.update(self.cfg.agents.env)
             env.update(
                 {
                     "AGENTMESH_TASK_ID": state.task_id,

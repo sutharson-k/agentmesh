@@ -9,6 +9,8 @@ agentmesh.yaml
 __pycache__/
 *.py[cod]
 *.egg-info/
+target/
+
 .venv/
 venv/
 .pytest_cache/

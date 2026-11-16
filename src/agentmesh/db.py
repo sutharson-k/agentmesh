@@ -105,6 +105,21 @@ CREATE TABLE IF NOT EXISTS counters (
     name  TEXT PRIMARY KEY,
     value INTEGER NOT NULL DEFAULT 0
 );
+
+-- Model catalog. Rows are metadata only; credentials are never stored here.
+CREATE TABLE IF NOT EXISTS models (
+    id             TEXT PRIMARY KEY,
+    provider       TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    free           INTEGER NOT NULL DEFAULT 0,
+    context_length INTEGER,
+    size_bytes     INTEGER,
+    metadata       TEXT NOT NULL DEFAULT '{}',
+    source         TEXT NOT NULL DEFAULT 'manual',
+    imported_at    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider, name);
+CREATE INDEX IF NOT EXISTS idx_models_free ON models(free, provider);
 """
 
 TERMINAL = {"succeeded", "failed", "canceled", "timed_out"}
@@ -206,7 +221,14 @@ class Store:
     @staticmethod
     def _row(row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
-        for key in ("capabilities", "labels", "required_capabilities", "result", "detail"):
+        for key in (
+            "capabilities",
+            "labels",
+            "required_capabilities",
+            "result",
+            "detail",
+            "metadata",
+        ):
             if key in data and isinstance(data[key], str):
                 try:
                     data[key] = json.loads(data[key])
@@ -1004,6 +1026,98 @@ class Store:
             data["active"] = active["n"] if active else 0
             out.append(data)
         return out
+
+    # ---------------------------------------------------------------- models
+
+    @staticmethod
+    def model_id(provider: str, name: str) -> str:
+        return f"{provider}:{name}"
+
+    def import_models(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        source: str = "manual",
+        replace: bool = False,
+    ) -> dict[str, Any]:
+        """Upsert catalog rows. Metadata only: never store provider secrets."""
+        ts = now()
+        inserted = 0
+        updated = 0
+        with self._tx() as cur:
+            if replace and entries:
+                providers = {str(e["provider"]).strip().lower() for e in entries}
+                for provider in providers:
+                    cur.execute("DELETE FROM models WHERE provider=?", (provider,))
+            for entry in entries:
+                provider = str(entry["provider"]).strip().lower()
+                name = str(entry["name"]).strip()
+                model_id = self.model_id(provider, name)
+                exists = cur.execute("SELECT 1 FROM models WHERE id=?", (model_id,)).fetchone()
+                cur.execute(
+                    """INSERT INTO models(id, provider, name, free, context_length, size_bytes,
+                                          metadata, source, imported_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(id) DO UPDATE SET free=excluded.free,
+                         context_length=excluded.context_length,
+                         size_bytes=excluded.size_bytes, metadata=excluded.metadata,
+                         source=excluded.source, imported_at=excluded.imported_at""",
+                    (
+                        model_id,
+                        provider,
+                        name,
+                        1 if entry.get("free") else 0,
+                        entry.get("context_length"),
+                        entry.get("size_bytes"),
+                        json.dumps(entry.get("metadata") or {}, separators=(",", ":")),
+                        source,
+                        ts,
+                    ),
+                )
+                if exists:
+                    updated += 1
+                else:
+                    inserted += 1
+        return {
+            "inserted": inserted,
+            "updated": updated,
+            "total": inserted + updated,
+            "source": source,
+        }
+
+    def list_models(
+        self, *, free_only: bool = False, provider: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM models"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if free_only:
+            clauses.append("free = 1")
+        if provider:
+            clauses.append("provider = ?")
+            params.append(provider.strip().lower())
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY provider, name"
+        out = []
+        for row in self._query(sql, tuple(params)):
+            data = self._row(row)
+            data["free"] = bool(data["free"])
+            out.append(data)
+        return out
+
+    def delete_model(self, model_id: str) -> bool:
+        with self._tx() as cur:
+            cur.execute("DELETE FROM models WHERE id=?", (model_id,))
+            return cur.rowcount > 0
+
+    def clear_models(self, provider: str | None = None) -> int:
+        with self._tx() as cur:
+            if provider:
+                cur.execute("DELETE FROM models WHERE provider=?", (provider.strip().lower(),))
+            else:
+                cur.execute("DELETE FROM models")
+            return cur.rowcount
 
     # ----------------------------------------------------------------- stats
 

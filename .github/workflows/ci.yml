@@ -6,6 +6,14 @@ on:
   pull_request:
 
 jobs:
+  loadgen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check Rust load generator
+        run: cargo check --locked --manifest-path tools/loadgen/Cargo.toml
+
   test:
     runs-on: ubuntu-latest
     strategy:

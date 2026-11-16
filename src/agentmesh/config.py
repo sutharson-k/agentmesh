@@ -10,6 +10,32 @@ from typing import Any
 import yaml
 
 
+def _resolve_secret(value: Any, label: str) -> Any:
+    """Resolve ``env:VAR`` / ``file:PATH`` references, never persisting secrets.
+
+    A reference that cannot be resolved is an error rather than an empty
+    string: silently dropping an API key would turn auth off by accident.
+    """
+    if not isinstance(value, str):
+        return value
+    raw = value.strip()
+    if raw.startswith("env:"):
+        name = raw[4:].strip()
+        if not name:
+            raise ValueError(f"{label}: empty env: reference")
+        resolved = os.environ.get(name)
+        if resolved is None:
+            raise ValueError(f"{label}: environment variable {name} is not set")
+        return resolved
+    if raw.startswith("file:"):
+        path = Path(raw[5:].strip()).expanduser()
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ValueError(f"{label}: cannot read secret file {path}: {exc}") from exc
+    return value
+
+
 def _as_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -113,8 +139,24 @@ class AgentConfig:
             "claude": ["claude", "-p", "{prompt}", "--output-format", "text"],
             "codex": ["codex", "exec", "--full-auto", "{prompt}"],
             "opencode": ["opencode", "run", "{prompt}"],
+            # Local models. Workers need a reachable OLLAMA_HOST; the model
+            # name comes from the task's agent.model field.
+            "ollama": ["ollama", "run", "{model}", "{prompt}"],
         }
     )
+    # Extra environment for every external agent CLI, e.g.
+    # {"OLLAMA_HOST": "http://host.docker.internal:11434"}.
+    env: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class CatalogConfig:
+    """Where the dashboard imports model metadata from. No credentials live here."""
+
+    ollama_url: str = "http://127.0.0.1:11434"
+    allow_remote_ollama: bool = False
+    openrouter_url: str = "https://openrouter.ai/api/v1/models"
+    request_timeout_s: float = 15.0
 
 
 @dataclass
@@ -122,6 +164,7 @@ class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     worker: WorkerConfig = field(default_factory=WorkerConfig)
     agents: AgentConfig = field(default_factory=AgentConfig)
+    catalog: CatalogConfig = field(default_factory=CatalogConfig)
     source: str | None = None
 
     @classmethod
@@ -149,6 +192,7 @@ class Config:
     def _apply(self, data: dict[str, Any]) -> None:
         self._apply_section(self.server, data.get("server"), "server")
         self._apply_section(self.worker, data.get("worker"), "worker")
+        self._apply_section(self.catalog, data.get("catalog"), "catalog")
         agents = data.get("agents")
         if isinstance(agents, dict):
             commands = agents.get("commands")
@@ -158,6 +202,14 @@ class Config:
                     if isinstance(argv, list) and all(isinstance(x, str) for x in argv):
                         parsed[str(kind)] = list(argv)
                 self.agents.commands.update(parsed)
+            agent_env = agents.get("env")
+            if isinstance(agent_env, dict):
+                self.agents.env.update(
+                    {
+                        str(k): str(_resolve_secret(v, f"agents.env.{k}"))
+                        for k, v in agent_env.items()
+                    }
+                )
 
     @staticmethod
     def _apply_section(target: Any, data: Any, name: str) -> None:
@@ -181,12 +233,20 @@ class Config:
                 setattr(target, key, int(value))
             elif isinstance(current, float):
                 setattr(target, key, float(value))
-            elif isinstance(current, list) and value is not None and not isinstance(value, list):
-                setattr(target, key, [str(value)])
+            elif isinstance(current, list):
+                items = value if isinstance(value, list) else ([] if value is None else [value])
+                setattr(
+                    target,
+                    key,
+                    [
+                        _resolve_secret(item, f"{name}.{key}[{index}]")
+                        for index, item in enumerate(items)
+                    ],
+                )
             elif isinstance(current, dict) and isinstance(value, dict):
                 setattr(target, key, {str(k): str(v) for k, v in value.items()})
             else:
-                setattr(target, key, value)
+                setattr(target, key, _resolve_secret(value, f"{name}.{key}"))
 
     def _apply_env(self) -> None:
         env = os.environ
@@ -215,6 +275,12 @@ class Config:
             w.slots = int(v)
         if v := env.get("AGENTMESH_EGRESS_TOKEN"):
             w.docker.egress_token = v
+        if v := env.get("AGENTMESH_OLLAMA_URL"):
+            self.catalog.ollama_url = v
+        if v := env.get("AGENTMESH_OPENROUTER_URL"):
+            self.catalog.openrouter_url = v
+        if v := env.get("AGENTMESH_ALLOW_REMOTE_OLLAMA"):
+            self.catalog.allow_remote_ollama = _as_bool(v, False)
 
     def validate(self) -> None:
         s, w = self.server, self.worker
@@ -235,6 +301,14 @@ class Config:
         if not s.api_keys:
             # Open mode is allowed for local development, but is never silent.
             pass
+        for label, url in (
+            ("catalog.ollama_url", self.catalog.ollama_url),
+            ("catalog.openrouter_url", self.catalog.openrouter_url),
+        ):
+            if not (url.startswith("http://") or url.startswith("https://")):
+                raise ValueError(f"{label} must be an http(s) URL")
+        if self.catalog.request_timeout_s <= 0:
+            raise ValueError("catalog.request_timeout_s must be positive")
 
 
 DEFAULT_CONFIG_YAML = """\
@@ -242,7 +316,9 @@ server:
   host: 127.0.0.1
   port: 8080
   db_path: var/agentmesh.db
-  api_keys: []          # empty = open mode (development only); use bearer tokens in production
+  # Never commit real tokens. Resolve them at startup from the environment
+  # (env:VAR) or a mounted secret file (file:/run/secrets/agentmesh).
+  api_keys: []          # e.g. ["env:AGENTMESH_API_KEY"]; empty = open mode (dev only)
   lease_ttl_s: 30
   heartbeat_timeout_s: 45
   max_global_running: 512
@@ -261,4 +337,15 @@ worker:
       - python:3.12-slim
       - node:22-slim
       - ubuntu:24.04
+
+catalog:
+  ollama_url: http://127.0.0.1:11434
+  allow_remote_ollama: false
+
+agents:
+  commands:
+    ollama: [ollama, run, "{model}", "{prompt}"]
+  # Sent to every external agent CLI inside the sandbox.
+  env:
+    OLLAMA_HOST: http://127.0.0.1:11434
 """

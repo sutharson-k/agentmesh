@@ -201,6 +201,46 @@ class TenantLimits(BaseModel):
     max_concurrent: int = Field(default=64, ge=1, le=4096)
 
 
+class ModelEntry(BaseModel):
+    """A model imported into the catalog (never contains credentials)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    provider: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=300)
+    free: bool = False
+    context_length: int | None = Field(default=None, ge=0, le=100_000_000)
+    size_bytes: int | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("provider")
+    @classmethod
+    def _provider(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", value):
+            raise ValueError("provider must match [a-z0-9][a-z0-9_-]{0,63}")
+        return value
+
+
+class ModelImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    models: list[ModelEntry] = Field(min_length=1, max_length=5000)
+    replace: bool = False
+
+
+class OpenRouterImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    free_only: bool = True
+
+
+class OllamaImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str | None = Field(default=None, max_length=500)
+
+
 class TaskQuery(BaseModel):
     status: str | None = None
     tenant: str | None = None

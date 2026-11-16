@@ -2,7 +2,9 @@ server:
   host: 127.0.0.1
   port: 8080
   db_path: var/agentmesh.db
-  # Empty means open mode (development only). Use a long random token in production.
+  # Never commit real tokens. Resolve at startup from env:VAR or file:PATH.
+  # e.g. ["env:AGENTMESH_API_KEY"] or ["file:/run/secrets/agentmesh_key"].
+  # Empty means open mode (development only).
   api_keys: []
   lease_ttl_s: 30
   heartbeat_timeout_s: 45
@@ -56,8 +58,21 @@ worker:
     memory_mb: 1024
     guest_agent_port: 52000
 
+catalog:
+  # Model metadata source for the dashboard "import ollama" button.
+  ollama_url: http://127.0.0.1:11434
+  # Loopback-only by default so the control plane cannot be used as an SSRF pivot.
+  allow_remote_ollama: false
+  openrouter_url: https://openrouter.ai/api/v1/models
+
 agents:
   commands:
     claude: ["claude", "-p", "{prompt}", "--output-format", "text"]
     codex: ["codex", "exec", "--full-auto", "{prompt}"]
     opencode: ["opencode", "run", "{prompt}"]
+    ollama: ["ollama", "run", "{model}", "{prompt}"]
+  env:
+    # Reach a host-side Ollama from the sandbox. On Docker Desktop use
+    # http://host.docker.internal:11434; on Linux the host gateway address.
+    # The sandbox still needs network access to that endpoint.
+    OLLAMA_HOST: http://127.0.0.1:11434
