@@ -118,6 +118,15 @@
     font-family:var(--mono);font-size:11.5px}
   .icon-btn{background:none;border:0;color:var(--dim);cursor:pointer;font:11px var(--mono);padding:2px 4px}
   .icon-btn:hover{color:var(--red)}
+  .composer textarea{width:100%;min-height:104px;resize:vertical;font:12px/1.55 var(--mono)}
+  .composer .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px;margin-top:10px}
+  .composer .fields label{display:flex;flex-direction:column;gap:4px;font:10px var(--mono);
+    color:var(--dim);text-transform:uppercase;letter-spacing:.1em}
+  .composer .fields .field{min-width:0;width:100%}
+  .composefoot{display:flex;align-items:center;gap:10px;margin-top:12px}
+  .composefoot .fineprint{margin:0;flex:1}
+  .btn.primary{border-color:#2b4a52;color:var(--cyan)}
+  .btn:disabled{opacity:.55;cursor:default}
   @media(max-width:1000px){.kpis{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
   @media(max-width:620px){.kpis{grid-template-columns:1fr 1fr}.wrap{padding:16px 12px 40px}
     .taskname{max-width:120px} th:nth-child(4),td:nth-child(4){display:none}}
@@ -154,6 +163,31 @@
 
   <div class="grid">
     <div style="display:grid;gap:16px">
+      <section class="card panel composer">
+        <h2>New task <span class="tag">prompt → sandbox</span></h2>
+        <textarea class="field" id="c-prompt" spellcheck="false"
+          placeholder="Describe the task for the agent — e.g. &quot;Run the test suite and fix the failing tests. Do not touch CI config.&quot;"></textarea>
+        <div class="fields">
+          <label>agent<input class="field" id="c-kind" list="agent-kinds" value="mock" spellcheck="false" /></label>
+          <label>model<select class="field" id="c-model"><option value="">— none —</option></select></label>
+          <label>tenant<input class="field" id="c-tenant" value="default" spellcheck="false" /></label>
+          <label>timeout s<input class="field" id="c-timeout" type="number" min="10" max="86400" value="900" /></label>
+          <label>cpu<input class="field" id="c-cpu" type="number" min="0.1" max="32" step="0.5" value="1" /></label>
+          <label>memory MB<input class="field" id="c-mem" type="number" min="32" max="131072" step="128" value="512" /></label>
+        </div>
+        <datalist id="agent-kinds">
+          <option value="mock"></option>
+          <option value="claude"></option>
+          <option value="codex"></option>
+          <option value="opencode"></option>
+          <option value="ollama"></option>
+        </datalist>
+        <div class="composefoot">
+          <div class="fineprint" id="compose-msg">one fresh sandbox per task · network off unless the task allows it</div>
+          <button class="btn primary" id="c-submit">run task</button>
+        </div>
+      </section>
+
       <section class="card panel">
         <h2>Queue throughput <span class="tag" id="throughput"></span></h2>
         <div class="bars">
@@ -268,7 +302,12 @@ async function api(path, opts){
   if (r.status === 401) { $("overlay").classList.add("show"); throw new Error("unauthorized"); }
   if (!r.ok) {
     let detail = path + " -> " + r.status;
-    try { const body = await r.json(); if (body && body.detail) detail = String(body.detail); } catch (e) {}
+    try {
+      const body = await r.json();
+      if (body && body.detail) {
+        detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+      }
+    } catch (e) {}
     throw new Error(detail);
   }
   return r.json();
@@ -345,10 +384,84 @@ function renderModels(models){
 
 async function loadModels(){
   try {
-    const data = await api("/v1/models?free_only=" + (state.modelsFreeOnly ? "true" : "false"));
-    renderModels(data.models || []);
+    const data = await api("/v1/models");
+    const all = data.models || [];
+    const shown = state.modelsFreeOnly ? all.filter(m => m.free) : all;
+    fillModelOptions(shown);
+    renderModels(shown);
   } catch (err) {
     if (String(err.message) !== "unauthorized") modelMsg(String(err.message), "error");
+  }
+}
+
+function fillModelOptions(models){
+  const select = $("c-model");
+  const current = select.value || localStorage.getItem("agentmesh_compose_model") || "";
+  const groups = new Map();
+  for (const m of models){
+    if (!m.name) continue;
+    const provider = m.provider || "models";
+    if (!groups.has(provider)) groups.set(provider, new Set());
+    groups.get(provider).add(m.name);
+  }
+  let html = `<option value="">— none —</option>`;
+  let found = false;
+  for (const provider of [...groups.keys()].sort()){
+    const names = [...groups.get(provider)].sort();
+    html += `<optgroup label="${esc(provider)}">`;
+    for (const name of names){
+      const selected = name === current ? " selected" : "";
+      if (selected) found = true;
+      html += `<option value="${esc(name)}"${selected}>${esc(name)}</option>`;
+    }
+    html += `</optgroup>`;
+  }
+  select.innerHTML = html;
+  if (!found && current) select.value = "";
+}
+
+function composeMsg(text, tone){
+  const el = $("compose-msg");
+  el.textContent = text;
+  el.style.color = tone === "error" ? "var(--red)" : tone === "ok" ? "var(--green)" : "var(--dim)";
+}
+
+async function submitTask(){
+  const prompt = $("c-prompt").value.trim();
+  const kind = ($("c-kind").value.trim() || "mock").toLowerCase();
+  if (!prompt){ composeMsg("write a prompt first", "error"); $("c-prompt").focus(); return; }
+  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(kind)){ composeMsg("agent must match [a-z0-9][a-z0-9_-]{0,31}", "error"); return; }
+
+  const payload = {
+    name: "dash-" + Date.now().toString(36),
+    tenant: $("c-tenant").value.trim() || "default",
+    priority: 50,
+    agent: { kind: kind, prompt: prompt },
+    cpu: Number($("c-cpu").value) || 1,
+    memory_mb: Math.round(Number($("c-mem").value)) || 512,
+    timeout_s: Math.round(Number($("c-timeout").value)) || 900
+  };
+  const model = $("c-model").value.trim();
+  if (model) payload.agent.model = model;
+  else if (kind === "ollama"){ composeMsg("ollama needs a model — import or select one", "error"); return; }
+
+  const btn = $("c-submit");
+  btn.disabled = true;
+  composeMsg("submitting…");
+  try {
+    const data = await api("/v1/tasks", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    const task = data.task || {};
+    composeMsg("queued " + (task.id || "task"), "ok");
+    $("c-prompt").value = "";
+    await tick();
+  } catch (err) {
+    composeMsg(String(err.message), "error");
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -490,6 +603,13 @@ const savedOllama = localStorage.getItem("agentmesh_ollama_url");
 if (savedOllama) $("ollama-url").value = savedOllama;
 $("import-openrouter").onclick = importOpenRouter;
 $("import-ollama").onclick = importOllama;
+$("c-submit").onclick = submitTask;
+$("c-model").onchange = () => {
+  localStorage.setItem("agentmesh_compose_model", $("c-model").value);
+};
+$("c-prompt").addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submitTask();
+});
 $("tokeninput").addEventListener("keydown", e => { if (e.key === "Enter") $("savetoken").click(); });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) clearTimeout(state.timer);

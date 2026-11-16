@@ -63,7 +63,7 @@ agentmesh worker --backend fake --slots 8   # terminal 2 (dev only, no isolation
 agentmesh submit --name hello --prompt "write a hello-world CLI" --wait --logs
 ```
 
-Open <http://127.0.0.1:8080/dashboard> for the live fleet view.
+Open <http://127.0.0.1:8080/dashboard> for the live fleet view and the **New task** composer: write the prompt, pick the agent kind (mock / claude / codex / opencode / ollama), choose a model imported into the catalog, set tenant/timeout/CPU/memory, and press **run task**. `Ctrl+Enter` in the prompt submits. The same thing from a shell is `agentmesh submit --prompt ...`.
 
 ### Run the 120-agent demo
 
